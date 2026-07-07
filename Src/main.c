@@ -18,25 +18,58 @@
 
 #include <stdint.h>
 
-/* Register addresses for STM32F103, straight from the reference manual */
+/* ---- Register addresses (STM32F103 reference manual) ---- */
 #define RCC_APB2ENR   (*(volatile uint32_t *)0x40021018)
+#define RCC_APB1ENR   (*(volatile uint32_t *)0x4002101C)
+
 #define GPIOC_CRH     (*(volatile uint32_t *)0x40011004)
 #define GPIOC_ODR     (*(volatile uint32_t *)0x4001100C)
 
+#define TIM2_CR1      (*(volatile uint32_t *)0x40000000)
+#define TIM2_DIER     (*(volatile uint32_t *)0x4000000C)  /* interrupt enable */
+#define TIM2_SR       (*(volatile uint32_t *)0x40000010)
+#define TIM2_EGR      (*(volatile uint32_t *)0x40000014)
+#define TIM2_PSC      (*(volatile uint32_t *)0x40000028)
+#define TIM2_ARR      (*(volatile uint32_t *)0x4000002C)
+
+/* Cortex-M3 NVIC: lets the CPU accept individual interrupts */
+#define NVIC_ISER0    (*(volatile uint32_t *)0xE000E100)
+#define TIM2_IRQ_NUM  28   /* TIM2 is interrupt line 28 on the F103 */
+
+/* Runs automatically every time TIM2 overflows (every 500 ms).
+   The name MUST match the vector table entry exactly. */
+void TIM2_IRQHandler(void)
+{
+    if (TIM2_SR & (1 << 0))       /* was it the update event? */
+    {
+        TIM2_SR   &= ~(1 << 0);   /* clear the flag, or it re-fires forever */
+        GPIOC_ODR ^= (1 << 13);   /* toggle the LED */
+    }
+}
+
 int main(void)
 {
-    /* 1. Enable clock to GPIO Port C (bit 4 of RCC_APB2ENR) */
+    /* ---- GPIO: PC13 as output ---- */
     RCC_APB2ENR |= (1 << 4);
+    GPIOC_CRH   &= ~(0xF << 20);
+    GPIOC_CRH   |=  (0x2 << 20);
 
-    /* 2. Set PC13 as output push-pull, 2 MHz.
-       PC13 config lives in bits 20-23 of CRH. 0b0010 = output/2MHz/push-pull */
-    GPIOC_CRH &= ~(0xF << 20);
-    GPIOC_CRH |=  (0x2 << 20);
+    /* ---- TIM2: overflow every 500 ms ---- */
+    RCC_APB1ENR |= (1 << 0);
+    TIM2_PSC = 7999;              /* 8 MHz / 8000 = 1 kHz tick */
+    TIM2_ARR = 499;               /* 500 ticks     = 500 ms    */
+    TIM2_EGR |= (1 << 0);         /* load PSC/ARR now */
+    TIM2_SR  &= ~(1 << 0);        /* clear the flag UG set */
 
-    /* 3. Blink forever */
+    /* ---- turn on interrupts ---- */
+    TIM2_DIER  |= (1 << 0);              /* timer: raise interrupt on overflow */
+    NVIC_ISER0 |= (1 << TIM2_IRQ_NUM);   /* CPU: allow the TIM2 interrupt */
+
+    TIM2_CR1 |= (1 << 0);         /* start the counter */
+
     while (1)
     {
-        GPIOC_ODR ^= (1 << 13);                      /* toggle PC13 */
-        for (volatile int i = 0; i < 50000; i++);   /* crude delay */
+        /* Nothing here — and that's the point.
+           The CPU is free; TIM2_IRQHandler blinks the LED in the background. */
     }
 }
