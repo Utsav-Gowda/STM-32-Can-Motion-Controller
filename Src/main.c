@@ -19,15 +19,16 @@
 #include <stdint.h>
 
 /* ---- RCC (clocks) ---- */
-#define RCC_APB2ENR   (*(volatile uint32_t *)0x40021018)  /* GPIOA, GPIOC, USART1 */
-#define RCC_APB1ENR   (*(volatile uint32_t *)0x4002101C)  /* TIM2 */
+#define RCC_APB2ENR   (*(volatile uint32_t *)0x40021018)
+#define RCC_APB1ENR   (*(volatile uint32_t *)0x4002101C)
 
 /* ---- GPIO ---- */
-#define GPIOA_CRH     (*(volatile uint32_t *)0x40010804)  /* PA9/PA10 config */
-#define GPIOC_CRH     (*(volatile uint32_t *)0x40011004)  /* PC13 config */
+#define GPIOA_CRL     (*(volatile uint32_t *)0x40010800)  /* PA6, PA7 */
+#define GPIOA_CRH     (*(volatile uint32_t *)0x40010804)  /* PA9, PA10 */
+#define GPIOC_CRH     (*(volatile uint32_t *)0x40011004)  /* PC13 */
 #define GPIOC_ODR     (*(volatile uint32_t *)0x4001100C)
 
-/* ---- TIM2 ---- */
+/* ---- TIM2 (500 ms tick / heartbeat) ---- */
 #define TIM2_CR1      (*(volatile uint32_t *)0x40000000)
 #define TIM2_DIER     (*(volatile uint32_t *)0x4000000C)
 #define TIM2_SR       (*(volatile uint32_t *)0x40000010)
@@ -35,52 +36,174 @@
 #define TIM2_PSC      (*(volatile uint32_t *)0x40000028)
 #define TIM2_ARR      (*(volatile uint32_t *)0x4000002C)
 
+/* ---- TIM3 (motor PWM) ---- */
+#define TIM3_CR1      (*(volatile uint32_t *)0x40000400)
+#define TIM3_EGR      (*(volatile uint32_t *)0x40000414)
+#define TIM3_CCMR1    (*(volatile uint32_t *)0x40000418)
+#define TIM3_CCER     (*(volatile uint32_t *)0x40000420)
+#define TIM3_PSC      (*(volatile uint32_t *)0x40000428)
+#define TIM3_ARR      (*(volatile uint32_t *)0x4000042C)
+#define TIM3_CCR1     (*(volatile uint32_t *)0x40000434)
+#define TIM3_CCR2     (*(volatile uint32_t *)0x40000438)
+
 /* ---- USART1 ---- */
 #define USART1_SR     (*(volatile uint32_t *)0x40013800)
 #define USART1_DR     (*(volatile uint32_t *)0x40013804)
 #define USART1_BRR    (*(volatile uint32_t *)0x40013808)
 #define USART1_CR1    (*(volatile uint32_t *)0x4001380C)
 
-/* ---- NVIC (CPU interrupt controller) ---- */
+/* ---- NVIC ---- */
 #define NVIC_ISER0    (*(volatile uint32_t *)0xE000E100)
 #define TIM2_IRQ_NUM  28
+
+/* ================= CAN1 (bxCAN) ================= */
+#define CAN_MCR    (*(volatile uint32_t *)0x40006400)
+#define CAN_MSR    (*(volatile uint32_t *)0x40006404)
+#define CAN_TSR    (*(volatile uint32_t *)0x40006408)
+#define CAN_RF0R   (*(volatile uint32_t *)0x4000640C)
+#define CAN_BTR    (*(volatile uint32_t *)0x4000641C)
+#define CAN_TI0R   (*(volatile uint32_t *)0x40006580)
+#define CAN_TDT0R  (*(volatile uint32_t *)0x40006584)
+#define CAN_TDL0R  (*(volatile uint32_t *)0x40006588)
+#define CAN_RI0R   (*(volatile uint32_t *)0x400065B0)
+#define CAN_RDL0R  (*(volatile uint32_t *)0x400065B8)
+#define CAN_FMR    (*(volatile uint32_t *)0x40006600)
+#define CAN_FM1R   (*(volatile uint32_t *)0x40006604)
+#define CAN_FS1R   (*(volatile uint32_t *)0x4000660C)
+#define CAN_FFA1R  (*(volatile uint32_t *)0x40006614)
+#define CAN_FA1R   (*(volatile uint32_t *)0x4000661C)
+#define CAN_F0R1   (*(volatile uint32_t *)0x40006640)
+#define CAN_F0R2   (*(volatile uint32_t *)0x40006644)
+
+/* ---- pick ONE role for this build ---- */
+#define ROLE_LOOPBACK      /* single board: run A + B together, CAN in loopback */
+/* #define ROLE_NODE_A */  /* two boards: sender only          */
+/* #define ROLE_NODE_B */  /* two boards: receiver + LED only  */
+
+#if defined(ROLE_LOOPBACK)
+  #define CAN_LOOPBACK 1
+  #define RUN_A 1
+  #define RUN_B 1
+#elif defined(ROLE_NODE_A)
+  #define CAN_LOOPBACK 0
+  #define RUN_A 1
+  #define RUN_B 0
+#elif defined(ROLE_NODE_B)
+  #define CAN_LOOPBACK 0
+  #define RUN_A 0
+  #define RUN_B 1
+#endif
+
+#define RAMP_STEP 3        /* LED breathing speed; bigger = faster */
+
+#define GPIOC_BSRR (*(volatile uint32_t *)0x40011010)   /* skip if you already have it */
+#define LED_ON()   (GPIOC_BSRR = (1u << (13 + 16)))      /* PC13 low  -> LED on  */
+#define LED_OFF()  (GPIOC_BSRR = (1u << 13))             /* PC13 high -> LED off */
 
 volatile uint32_t ticks = 0;
 volatile uint8_t  tick_flag = 0;
 
 void TIM2_IRQHandler(void)
 {
-    if (TIM2_SR & (1 << 0))
-    {
+    if (TIM2_SR & (1 << 0)) {
         TIM2_SR   &= ~(1 << 0);
-        GPIOC_ODR ^= (1 << 13);   /* toggle LED */
+        GPIOC_ODR ^= (1 << 13);
         ticks++;
-        tick_flag = 1;            /* let main() know it's time to print */
+        tick_flag = 1;
     }
 }
 
-/* ---- tiny UART print helpers (you'll reuse these constantly) ---- */
-void uart_send_char(char c)
+void uart_send_char(char c) { while (!(USART1_SR & (1 << 7))); USART1_DR = c; }
+void uart_send_string(const char *s) { while (*s) uart_send_char(*s++); }
+void uart_send_int(int n)
 {
-    while (!(USART1_SR & (1 << 7)));   /* wait until TXE: transmit reg empty */
-    USART1_DR = c;
-}
-void uart_send_string(const char *s)
-{
-    while (*s) uart_send_char(*s++);
-}
-void uart_send_uint(uint32_t n)        /* print an unsigned number as text */
-{
-    char buf[11];
-    int i = 0;
+    if (n < 0) { uart_send_char('-'); n = -n; }
+    char buf[11]; int i = 0;
     if (n == 0) { uart_send_char('0'); return; }
     while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
     while (i > 0) uart_send_char(buf[--i]);
 }
 
+/* speed: -100 (full reverse) .. 0 (stop) .. +100 (full forward) */
+void motor_set(int speed)
+{
+    if (speed > 100)  speed = 100;
+    if (speed < -100) speed = -100;
+    if (speed >= 0) {           /* forward: PWM on IN1, IN2 held low */
+        TIM3_CCR1 = speed * 10;
+        TIM3_CCR2 = 0;
+    } else {                    /* reverse: PWM on IN2, IN1 held low */
+        TIM3_CCR1 = 0;
+        TIM3_CCR2 = (-speed) * 10;
+    }
+}
+
+/* loopback=1 -> self-test, no wires. loopback=0 -> real bus (used later). */
+void can_init(uint8_t loopback)
+{
+    RCC_APB1ENR |= (1 << 25);              /* CAN1 clock */
+
+    /* PA11 = CAN_RX (floating input), PA12 = CAN_TX (AF push-pull) */
+    GPIOA_CRH &= ~(0xF << 12); GPIOA_CRH |= (0x4 << 12);
+    GPIOA_CRH &= ~(0xF << 16); GPIOA_CRH |= (0xB << 16);
+
+    CAN_MCR &= ~(1 << 1);                  /* exit sleep  */
+    CAN_MCR |=  (1 << 0);                  /* request init */
+    while (!(CAN_MSR & (1 << 0)));         /* wait: in init mode */
+
+    /* 500 kbit/s @ 8 MHz: TS1=13tq, TS2=2tq, SJW=1tq, prescaler=1, sample ~87.5% */
+    CAN_BTR = (12 << 16) | (1 << 20);
+    if (loopback) CAN_BTR |= (1u << 30);   /* LBKM: internal loopback */
+
+    /* filter 0: accept every ID into FIFO0 */
+    CAN_FMR  |=  (1 << 0);
+    CAN_FA1R &= ~(1 << 0);
+    CAN_FS1R |=  (1 << 0);
+    CAN_FM1R &= ~(1 << 0);
+    CAN_F0R1  = 0; CAN_F0R2 = 0;
+    CAN_FFA1R &= ~(1 << 0);
+    CAN_FA1R |=  (1 << 0);
+    CAN_FMR  &= ~(1 << 0);
+
+    CAN_MCR &= ~(1 << 0);                  /* leave init -> running */
+    while (CAN_MSR & (1 << 0));
+}
+
+void can_send(uint16_t id, uint8_t byte)
+{
+    while (!(CAN_TSR & (1 << 26)));        /* wait TX mailbox 0 empty */
+    CAN_TI0R  = ((uint32_t)id << 21);      /* standard ID, data frame */
+    CAN_TDT0R = 1;                         /* DLC = 1 byte */
+    CAN_TDL0R = byte;
+    CAN_TI0R |= (1 << 0);                  /* request transmit */
+    while (!(CAN_TSR & (1 << 0)));         /* wait until sent (RQCP0) */
+}
+
+volatile uint8_t g_brightness = 0;   /* Node B: current LED command   */
+volatile uint8_t g_last_tx    = 0;   /* Node A: last value sent        */
+
+void node_a_send(void)               /* SENDER role */
+{
+    static int16_t v = 0, dir = RAMP_STEP;
+    v += dir;
+    if (v >= 255) { v = 255; dir = -RAMP_STEP; }
+    if (v <= 0)   { v = 0;   dir =  RAMP_STEP; }
+    g_last_tx = (uint8_t)v;
+    can_send(0x123, g_last_tx);
+}
+
+void node_b_receive(void)            /* RECEIVER + ACTUATOR role */
+{
+    if (CAN_RF0R & 0x3) {                 /* frame waiting in FIFO0 */
+        g_brightness = CAN_RDL0R & 0xFF;  /* the actuator command   */
+        CAN_RF0R |= (1 << 5);             /* release the slot       */
+    }
+}
+
 int main(void)
 {
-    /* ---- GPIO clocks: Port A (for UART) and Port C (for LED) ---- */
+	RCC_APB2ENR |= (1 << 0);   /* AFIO clock */
+    /* ---- GPIO clocks ---- */
     RCC_APB2ENR |= (1 << 2);   /* GPIOA */
     RCC_APB2ENR |= (1 << 4);   /* GPIOC */
 
@@ -88,37 +211,60 @@ int main(void)
     GPIOC_CRH &= ~(0xF << 20);
     GPIOC_CRH |=  (0x2 << 20);
 
-    /* PA9  -> USART1 TX: alternate-function push-pull, 50 MHz = 0xB */
-    GPIOA_CRH &= ~(0xF << 4);
-    GPIOA_CRH |=  (0xB << 4);
-    /* PA10 -> USART1 RX: floating input = 0x4 */
-    GPIOA_CRH &= ~(0xF << 8);
-    GPIOA_CRH |=  (0x4 << 8);
+    /* PA9 -> USART1 TX (AF push-pull); PA10 -> USART1 RX (input) */
+    GPIOA_CRH &= ~(0xF << 4);  GPIOA_CRH |= (0xB << 4);
+    GPIOA_CRH &= ~(0xF << 8);  GPIOA_CRH |= (0x4 << 8);
 
-    /* ---- USART1: 9600 baud, 8-N-1 ---- */
-    RCC_APB2ENR |= (1 << 14);                       /* USART1 clock */
-    USART1_BRR = 833;                               /* 8 MHz / 9600 baud */
-    USART1_CR1 = (1 << 13) | (1 << 3) | (1 << 2);   /* UE | TE | RE */
+    /* PA6, PA7 -> TIM3 PWM outputs (AF push-pull) */
+    GPIOA_CRL &= ~(0xF << 24); GPIOA_CRL |= (0xB << 24);  /* PA6 */
+    GPIOA_CRL &= ~(0xF << 28); GPIOA_CRL |= (0xB << 28);  /* PA7 */
 
-    /* ---- TIM2: interrupt every 500 ms ---- */
+    /* ---- USART1: 9600 baud ---- */
+    RCC_APB2ENR |= (1 << 14);
+    USART1_BRR = 833;
+    USART1_CR1 = (1 << 13) | (1 << 3) | (1 << 2);
+
+    /* ---- TIM2: 500 ms interrupt (heartbeat) ---- */
     RCC_APB1ENR |= (1 << 0);
-    TIM2_PSC = 7999;
-    TIM2_ARR = 499;
-    TIM2_EGR  |= (1 << 0);
-    TIM2_SR   &= ~(1 << 0);
-    TIM2_DIER  |= (1 << 0);
-    NVIC_ISER0 |= (1 << TIM2_IRQ_NUM);
+    TIM2_PSC = 7999;  TIM2_ARR = 499;
+    TIM2_EGR  |= (1 << 0);  TIM2_SR &= ~(1 << 0);
+    TIM2_DIER |= (1 << 0);  NVIC_ISER0 |= (1 << TIM2_IRQ_NUM);
     TIM2_CR1  |= (1 << 0);
 
-    uart_send_string("STM32 UART online\r\n");
+    /* ---- TIM3: 8 kHz PWM on CH1 (PA6) and CH2 (PA7) ---- */
+    RCC_APB1ENR |= (1 << 1);            /* TIM3 clock */
+    TIM3_PSC = 0;                       /* count at full 8 MHz */
+    TIM3_ARR = 999;                     /* 8MHz / 1000 = 8 kHz; CCR 0..1000 = 0..100% */
+    TIM3_CCMR1 = (0x6 << 4) | (1 << 3)      /* CH1: PWM mode 1 + preload */
+               | (0x6 << 12) | (1 << 11);   /* CH2: PWM mode 1 + preload */
+    TIM3_CCER  = (1 << 0) | (1 << 4);   /* enable CH1 and CH2 outputs */
+    TIM3_CCR1 = 0;  TIM3_CCR2 = 0;      /* start stopped */
+    TIM3_EGR |= (1 << 0);               /* load preloaded values */
+    TIM3_CR1 |= (1 << 0);               /* start timer */
 
-    while (1)
-    {
-        if (tick_flag)
-        {
+    can_init(CAN_LOOPBACK);
+    uart_send_string("Node role test\r\n");
+
+    uart_send_string("Motor test online\r\n");
+
+    motor_set(100);                      /* <-- spin forward at 40%. Change this! */
+
+    while (1) {
+        /* free-running software PWM -> LED brightness = g_brightness */
+        static uint8_t duty = 0;
+        duty++;
+        if (duty < g_brightness) LED_ON(); else LED_OFF();
+
+        if (tick_flag) {
             tick_flag = 0;
-            uart_send_string("tick: ");
-            uart_send_uint(ticks);
+    #if RUN_A
+            node_a_send();
+    #endif
+    #if RUN_B
+            node_b_receive();
+    #endif
+            uart_send_string("tx=");   uart_send_int(g_last_tx);
+            uart_send_string(" led="); uart_send_int(g_brightness);
             uart_send_string("\r\n");
         }
     }
